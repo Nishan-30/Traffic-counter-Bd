@@ -6,7 +6,10 @@
 
 *Developed for transportation engineering research on Bangladesh's mixed-traffic urban roads*
 
-**Nishan** · B.Sc. Civil \& Environmental Engineering · SUST · 2026  
+<div align="center">
+**Nishan** 
+      
+B.Sc. Civil \& Environmental Engineering · SUST · 2026  
 *A product of* "*NextCity Tessera".*
 
 </div>
