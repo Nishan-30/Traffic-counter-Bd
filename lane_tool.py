@@ -276,7 +276,7 @@ class LaneTool:
     def _patch_config(self, lanes, w, h):
         """Write polygon zones into config.py so detector picks them up."""
         try:
-            with open("config.py", "r") as f:
+            with open("config.py", "r", encoding="utf-8") as f:
                 content = f.read()
 
             # Build new ZONES block (bounding boxes of each polygon)
@@ -303,7 +303,7 @@ class LaneTool:
             content += f"\n# Polygon zones (from lane_tool.py)\n"
             content += f"POLYGON_ZONES = {json.dumps({l['name']: l['points'] for l in lanes})}\n"
 
-            with open("config.py", "w") as f:
+            with open("config.py", "w", encoding="utf-8") as f:
                 f.write(content)
         except Exception as e:
             print(f"  [WARNING] Could not auto-patch config.py: {e}")

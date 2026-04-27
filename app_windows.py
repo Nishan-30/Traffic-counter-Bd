@@ -1,8 +1,8 @@
 # ================================================================
-#  TrafficCounter BD  —  app_windows.py  (v8.0)
+#  VELOXIS  —  app_windows.py  (v1.0)
 #
-#  Author  : (configurable — set in Settings)
-#  Default : Nishan, SUST CEE
+#  Author  : Nishan, SUST CEE
+#  Product : VELOXIS · an app of NextCity Tessera
 #  Year    : 2026
 #  License : MIT
 #
@@ -195,6 +195,14 @@ class DetectionThread(threading.Thread):
         if not cap.isOpened(): self.on_status("Cannot open source."); return
         cap.set(cv2.CAP_PROP_BUFFERSIZE,1)
         total=int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+
+        # Auto-detect video FPS and update config
+        detected_fps = cap.get(cv2.CAP_PROP_FPS)
+        if detected_fps and 5 < detected_fps < 120:
+            import config as cfg
+            cfg.VIDEO_FPS = detected_fps
+            self.on_status(f"Video FPS auto-detected: {detected_fps:.1f}")
+
         fn=0
         while not self._stop.is_set():
             ret,frame=cap.read()
@@ -235,7 +243,19 @@ class DetectionThread(threading.Thread):
             if self.on_progress and self.mode=="file":
                 self.on_progress(int(fn/total*100))
         cap.release()
-        self.on_done({"total_unique":len(det.counted_ids),"by_type":det.total_counts})
+        # Save session summary CSV with all metrics
+        det.save_session_summary()
+        self.on_done({
+            "total_unique":  len(det.counted_ids),
+            "by_type":       det.total_counts,
+            "phf":           det.phf,
+            "peak_rate":     det.peak_rate,
+            "avg_headway":   det.avg_headway_sec,
+            "saturation":    det.saturation_flow,
+            "speed_85th":    det.speed_85th,
+            "speed_mean":    det.speed_mean,
+            "safety_events": det.safety_events,
+        })
         self.on_status("Session complete ✓")
 
 
@@ -295,6 +315,9 @@ class ClickableVideoCanvas(ctk.CTkLabel):
         self._line_frac  = None
         self._frame_orig = None
         self.on_line_set = on_line_set
+        # Stored after each _render so _set_line_at can compute correct fraction
+        self._nh = None   # scaled frame height (pixels)
+        self._nw = None   # scaled frame width  (pixels)
         self.bind("<Button-1>",   self._on_click)
         self.bind("<B1-Motion>",  self._on_drag)
         self.bind("<Button-3>",   self._on_right)   # right-click = clear
@@ -338,6 +361,9 @@ class ClickableVideoCanvas(ctk.CTkLabel):
         img = Image.fromarray(rgb)
         self._img = ctk.CTkImage(light_image=img, dark_image=img, size=(nw,nh))
         self.configure(image=self._img, text="")
+        # Store scaled dimensions so _set_line_at can compute correct fraction
+        self._nh = nh
+        self._nw = nw
 
     def _on_click(self, e):
         self._set_line_at(e.y)
@@ -354,9 +380,13 @@ class ClickableVideoCanvas(ctk.CTkLabel):
             self.on_line_set(None)
 
     def _set_line_at(self, y_px):
-        h = self.winfo_height()
-        if h <= 0: return
-        frac = max(0.05, min(0.95, y_px / h))
+        # Use stored scaled frame height (nh) — NOT winfo_height() (widget height).
+        # When the video frame doesn't fill the full widget vertically, dividing by
+        # winfo_height causes the drawn line to appear above where the user clicked.
+        nh = self._nh if self._nh else self.winfo_height()
+        if nh <= 0: return
+        # Clamp click to within the frame area, then compute fraction of frame height
+        frac = max(0.05, min(0.95, y_px / nh))
         self._line_frac = frac
         if self._frame_orig is not None:
             self._render(self._frame_orig)
@@ -400,7 +430,7 @@ class StatusBar(ctk.CTkFrame):
         name=p.get("author_name","Nishan")
         inst=p.get("institution","SUST · CEE")
         self._right=ctk.CTkLabel(self,
-            text=f"TrafficCounter BD v8.0  ·  {name}, {inst}  ·  © 2026",
+            text=f"VELOXIS  ·  {name}, {inst}  ·  NextCity Tessera  ·  © 2026",
             font=("Segoe UI",10))
         self._right.grid(row=0,column=2,padx=12,sticky="e")
     def set(self,msg,state="idle"):
@@ -697,26 +727,26 @@ class LivePage(Page):
             ("bus","Bus","🚌","#60a5fa"),
             ("truck","Truck","🚛",ACC_PURPLE),
             ("bicycle","Bike","🚲",ACC_GREEN),
-            # Separator then analytics
             ("_live","Live","📍","#60a5fa"),
             ("_occ","Occ%","📊","#f97316"),
+            ("_queue","Queue","🚦","#818cf8"),
+            ("_rate","Rate/hr","📈","#fbbf24"),
             ("_person","People","🚶","#a78bfa"),
             ("_safety","Safety","⚠️","#f87171"),
         ]
         for col,(key,lbl,icon,acc) in enumerate(items):
-            # Mini card
-            f=ctk.CTkFrame(strip,corner_radius=8,
-                            border_width=1,height=48)
-            f.grid(row=0,column=col,padx=(0 if col==0 else 3,0),sticky="ew")
+            f=ctk.CTkFrame(strip,corner_radius=8,border_width=1,height=48)
+            f.grid(row=0,column=col,padx=(0 if col==0 else 2,0),sticky="ew")
             f.grid_propagate(False); f.grid_columnconfigure(0,weight=1)
             ctk.CTkLabel(f,text=f"{icon} {lbl}",font=("Segoe UI",8),
                          text_color="#64748b").grid(row=0,column=0,pady=(4,0))
-            val_lbl=ctk.CTkLabel(f,text="0",font=("Segoe UI",14,"bold"),
+            val_lbl=ctk.CTkLabel(f,text="0",font=("Segoe UI",13,"bold"),
                                   text_color=acc)
             val_lbl.grid(row=1,column=0,pady=(0,4))
             ctk.CTkFrame(f,fg_color=acc,height=2,corner_radius=0
                         ).grid(row=2,column=0,sticky="ew")
             self.lv_cards[key]=val_lbl
+        strip.grid_columnconfigure(list(range(14)),weight=1)
 
         self._live_manual_line = None
         self.video=ClickableVideoCanvas(self,
@@ -810,6 +840,8 @@ class LivePage(Page):
                         self.lv_cards[k].configure(text=str(bt.get(k,0)))
                     self.lv_cards["_live"].configure(text=str(summary.get("live_vehicles",0)))
                     self.lv_cards["_occ"].configure(text=f"{summary.get('occupancy_pct',0):.0f}%")
+                    self.lv_cards["_queue"].configure(text=str(summary.get("queue_length",0)))
+                    self.lv_cards["_rate"].configure(text=str(summary.get("current_rate",0)))
                     self.lv_cards["_person"].configure(text=str(summary.get("person_count",0)))
                     self.lv_cards["_safety"].configure(text=str(summary.get("safety_events",0)))
                     if total and self.home_page:
@@ -1328,7 +1360,12 @@ class DashboardPage(Page):
 
         cf=ctk.CTkFrame(self,corner_radius=14,border_width=1)
         cf.grid(row=2,column=0,padx=32,pady=(0,24),sticky="nsew")
-        tb_f=ctk.CTkFrame(cf,corner_radius=0,height=32); tb_f.pack(fill="x",padx=2,pady=(2,0))
+        # Use grid inside cf so the canvas always fills remaining space
+        cf.grid_rowconfigure(1,weight=1)
+        cf.grid_columnconfigure(0,weight=1)
+        tb_f=ctk.CTkFrame(cf,corner_radius=0,height=32)
+        tb_f.grid(row=0,column=0,sticky="ew",padx=2,pady=(2,0))
+        tb_f.grid_propagate(False)
 
         dark=ctk.get_appearance_mode()=="Dark"
         bg=("#0e1117" if dark else "#ffffff")
@@ -1338,7 +1375,7 @@ class DashboardPage(Page):
         self.ax=self.fig.add_subplot(111)
         self._style_ax()
         self.canvas=FigureCanvasTkAgg(self.fig,master=cf)
-        self.canvas.get_tk_widget().pack(fill="both",expand=True,padx=4,pady=4)
+        self.canvas.get_tk_widget().grid(row=1,column=0,sticky="nsew",padx=4,pady=4)
         self.toolbar=NavigationToolbar2Tk(self.canvas,tb_f)
         self.toolbar.update()
 
@@ -1417,7 +1454,10 @@ class DashboardPage(Page):
 
     def _render_chart(self):
         df=self._df()
-        self.ax.cla()   # clear axes only, not figure layout
+        self.ax.cla()
+        # Re-apply BOTH after cla() — matplotlib resets these on clear
+        self.fig.set_tight_layout(False)
+        self.fig.subplots_adjust(left=0.08,right=0.97,top=0.88,bottom=0.18)
         self._style_ax()
         dark=ctk.get_appearance_mode()=="Dark"
         fg=("#e8eaf0" if dark else "#0f172a")
@@ -1547,7 +1587,7 @@ class DashboardPage(Page):
             else:
                 self.ax.text(0.5,0.5,"Draw lanes first\n(Lane Drawing page).",
                     ha="center",va="center",color=mut,fontsize=13,transform=self.ax.transAxes)
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def refresh(self):
         if not self._ever_shown: self._ever_shown=True; self._render_chart()
@@ -1766,10 +1806,14 @@ class SettingsPage(Page):
 
         # Model
         s1=sec("Detection Model")
-        self.model_cb=ctk.CTkComboBox(s1,width=280,
-            values=["yolov8n.pt  (fastest — highway)","yolov8s.pt  (balanced)",
-                    "yolov8m.pt  (accurate)","bd_vehicles_best.pt  (custom BD model)"])
-        row(s1,"YOLO Model",self.model_cb,"Train custom model: python train_custom_model.py")
+        self.model_cb=ctk.CTkComboBox(s1,width=320,
+            values=["bd_vehicles_yolo11.pt  (custom BD · YOLOv11)",
+                    "bd_vehicles_best.pt  (custom BD · YOLOv8)",
+                    "yolo11n.pt  (fastest — no custom model)",
+                    "yolo11s.pt  (balanced — no custom model)",
+                    "yolov8n.pt  (YOLOv8 fastest)",
+                    "yolov8s.pt  (YOLOv8 balanced)"])
+        row(s1,"YOLO Model",self.model_cb,"bd_vehicles_yolo11.pt = your trained custom model")
         self.conf=ctk.CTkSlider(s1,from_=0.1,to=0.9,width=260)
         self.conf.set(0.40); row(s1,"Confidence (0.1–0.9)",self.conf,"Lower = detect more, Higher = fewer false positives")
 
@@ -1785,6 +1829,34 @@ class SettingsPage(Page):
         self.sw_sp=ctk.CTkSwitch(s3,text="Show speed (km/h)",onvalue=True,offvalue=False); self.sw_sp.select(); row(s3,"",self.sw_sp)
         self.sw_id=ctk.CTkSwitch(s3,text="Show track IDs",onvalue=True,offvalue=False); self.sw_id.select(); row(s3,"",self.sw_id)
         self.sw_zo=ctk.CTkSwitch(s3,text="Enable lane/zone counting",onvalue=True,offvalue=False); row(s3,"",self.sw_zo)
+
+        # Performance
+        s_perf=sec("Performance Mode")
+        # Detect GPU now and show status
+        try:
+            import torch
+            _gpu_ok = torch.cuda.is_available()
+            _gpu_name = torch.cuda.get_device_name(0) if _gpu_ok else "Not detected"
+        except Exception:
+            _gpu_ok = False
+            _gpu_name = "PyTorch not loaded yet"
+        gpu_status = f"GPU: {_gpu_name}" if _gpu_ok else "GPU: None — integrated graphics / CPU only"
+        gpu_color  = ACC_GREEN if _gpu_ok else ACC_AMBER
+        ctk.CTkLabel(s_perf,text=f"  Hardware detected:  {gpu_status}",
+                     font=("Segoe UI",11,"bold"),text_color=gpu_color
+                     ).pack(anchor="w",padx=18,pady=(0,8))
+        self.sw_cpu=ctk.CTkSwitch(s_perf,
+                                   text="CPU Performance Mode",
+                                   onvalue=True,offvalue=False,
+                                   button_color=ACC_GREEN,progress_color=ACC_GREEN)
+        if not _gpu_ok:
+            self.sw_cpu.select()   # auto-ON if no GPU
+        row(s_perf,"",self.sw_cpu)
+        ctk.CTkLabel(s_perf,
+                     text="  ON  → resize 416px, frame_skip=2  — smooth on HP Envy / Intel iGPU\n"
+                          "  OFF → resize 640px, frame_skip=1  — full accuracy, use only with dedicated GPU",
+                     font=("Segoe UI",10),justify="left",text_color="#64748b"
+                     ).pack(anchor="w",padx=18,pady=(0,12))
         self.sw_dual=ctk.CTkSwitch(s3,text="Dual line mode (bidirectional road)",
                                     onvalue=True,offvalue=False,
                                     button_color=ACC_AMBER,progress_color=ACC_AMBER)
@@ -1818,7 +1890,8 @@ class SettingsPage(Page):
     def _load(self):
         try:
             import config
-            m={"yolov8n.pt":0,"yolov8s.pt":1,"yolov8m.pt":2,"bd_vehicles_best.pt":3}
+            m={"bd_vehicles_yolo11.pt":0,"bd_vehicles_best.pt":1,
+                "yolo11n.pt":2,"yolo11s.pt":3,"yolov8n.pt":4,"yolov8s.pt":5}
             self.model_cb.set(self.model_cb.cget("values")[m.get(config.YOLO_MODEL,0)])
             self.conf.set(config.CONFIDENCE)
             self.ppm.delete(0,"end"); self.ppm.insert(0,str(config.PIXELS_PER_METER))
@@ -1826,6 +1899,8 @@ class SettingsPage(Page):
             (self.sw_sp.select if config.SHOW_SPEED else self.sw_sp.deselect)()
             (self.sw_id.select if config.SHOW_IDS else self.sw_id.deselect)()
             (self.sw_zo.select if config.ENABLE_ZONES else self.sw_zo.deselect)()
+            cpu = getattr(config,'CPU_PERFORMANCE_MODE',True)
+            (self.sw_cpu.select if cpu else self.sw_cpu.deselect)()
             dual = getattr(config,'USE_DUAL_LINES',False)
             (self.sw_dual.select if dual else self.sw_dual.deselect)()
             self.lpos.set(config.COUNTING_LINE_POSITION)
@@ -1840,7 +1915,8 @@ class SettingsPage(Page):
                 with open("config.py", encoding="utf-8") as f: c=f.read()
             except UnicodeDecodeError:
                 with open("config.py", encoding="latin-1") as f: c=f.read()
-            mn=["yolov8n.pt","yolov8s.pt","yolov8m.pt","bd_vehicles_best.pt"]
+            mn=["bd_vehicles_yolo11.pt","bd_vehicles_best.pt",
+                "yolo11n.pt","yolo11s.pt","yolov8n.pt","yolov8s.pt"]
             idx=next((i for i,v in enumerate(self.model_cb.cget("values")) if self.model_cb.get() in v),0)
             for pat,rep in [
                 (r'YOLO_MODEL\s*=\s*"[^"]*"',       f'YOLO_MODEL = "{mn[idx]}"'),
@@ -1850,6 +1926,7 @@ class SettingsPage(Page):
                 (r'SHOW_SPEED\s*=\s*\w+',            f'SHOW_SPEED = {bool(self.sw_sp.get())}'),
                 (r'SHOW_IDS\s*=\s*\w+',              f'SHOW_IDS = {bool(self.sw_id.get())}'),
                 (r'ENABLE_ZONES\s*=\s*\w+',          f'ENABLE_ZONES = {bool(self.sw_zo.get())}'),
+                (r'CPU_PERFORMANCE_MODE\s*=\s*\w+',  f'CPU_PERFORMANCE_MODE = {bool(self.sw_cpu.get())}'),
                 (r'USE_DUAL_LINES\s*=\s*\w+',        f'USE_DUAL_LINES = {bool(self.sw_dual.get())}'),
                 (r'COUNTING_LINE_POSITION\s*=\s*[\d.]+',f'COUNTING_LINE_POSITION = {self.lpos.get():.2f}'),
                 (r'LINE_POS_A\s*=\s*[\d.]+',         f'LINE_POS_A = {self.lpos_a.get():.2f}'),
@@ -1864,6 +1941,187 @@ class SettingsPage(Page):
 
 
 # ================================================================
+#  ABOUT PAGE
+# ================================================================
+class AboutPage(Page):
+    def __init__(self, master):
+        super().__init__(master)
+        self.grid_rowconfigure(1, weight=1)
+        self.page_header("ℹ️", "About", "VELOXIS · Product information · NextCity Tessera")
+
+        scroll = ctk.CTkScrollableFrame(self, corner_radius=0)
+        scroll.grid(row=1, column=0, padx=0, pady=0, sticky="nsew")
+        scroll.grid_columnconfigure(0, weight=1)
+
+        # ── Hero ──────────────────────────────────────────────
+        hero = ctk.CTkFrame(scroll, corner_radius=16, border_width=1)
+        hero.pack(fill="x", padx=32, pady=(20, 0))
+        hero.grid_columnconfigure(1, weight=1)
+
+        icon_f = ctk.CTkFrame(hero, width=88, height=88, corner_radius=22)
+        icon_f.grid(row=0, column=0, rowspan=3, padx=(28, 20), pady=28)
+        icon_f.grid_propagate(False)
+        ctk.CTkLabel(icon_f, text="🚦", font=("Segoe UI", 40)
+                     ).place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkLabel(hero, text="VELOXIS",
+                     font=("Segoe UI", 34, "bold"),
+                     text_color=ACC_BLUE).grid(row=0, column=1, sticky="w", pady=(26, 2))
+        ctk.CTkLabel(hero, text="AI-Powered Traffic Analysis Platform  ·  Bangladesh Edition",
+                     font=("Segoe UI", 13)).grid(row=1, column=1, sticky="w")
+        ctk.CTkLabel(hero,
+                     text="Version 2.0  ·  YOLOv11 + BoTSORT  ·  2026  ·  MIT License",
+                     font=("Segoe UI", 11),
+                     text_color="#64748b").grid(row=2, column=1, sticky="w", pady=(2, 26))
+
+        # ── Capability cards ──────────────────────────────────
+        cap_f = ctk.CTkFrame(scroll, fg_color="transparent")
+        cap_f.pack(fill="x", padx=32, pady=(16, 0))
+        cap_f.grid_columnconfigure((0,1,2,3), weight=1)
+
+        caps = [
+            ("🎯", "Detection",    "YOLOv11 + BoTSORT\nCustom BD model\n45,862 images",  ACC_BLUE),
+            ("🛺", "BD Vehicles",  "Rickshaw · CNG · Car\nMotorcycle · Bus · Truck\nBicycle · Easybike",  ACC_AMBER),
+            ("📊", "Analytics",    "PHF · Headway\nSaturation flow · V85\nCSV · Vissim export", ACC_TEAL),
+            ("⚡", "Performance",  "CPU & GPU modes\nReal-time HUD\nHomography speed", ACC_GREEN),
+        ]
+        for i, (icon, title, body, color) in enumerate(caps):
+            f = ctk.CTkFrame(cap_f, corner_radius=14, border_width=1)
+            f.grid(row=0, column=i, padx=(0 if i==0 else 10, 0), sticky="nsew")
+            ctk.CTkFrame(f, height=4, fg_color=color, corner_radius=0).pack(fill="x")
+            ctk.CTkLabel(f, text=icon, font=("Segoe UI", 28)).pack(pady=(16,4))
+            ctk.CTkLabel(f, text=title, font=("Segoe UI", 12, "bold")).pack()
+            ctk.CTkLabel(f, text=body, font=("Segoe UI", 10),
+                         text_color="#64748b", justify="center").pack(pady=(4,16))
+
+        # ── Developer + Research ──────────────────────────────
+        dev = ctk.CTkFrame(scroll, corner_radius=14, border_width=1)
+        dev.pack(fill="x", padx=32, pady=(16, 0))
+        dev.grid_columnconfigure((0,1), weight=1)
+
+        # Left: developer
+        dev_l = ctk.CTkFrame(dev, fg_color="transparent")
+        dev_l.grid(row=0, column=0, padx=(24,12), pady=22, sticky="nsew")
+
+        ctk.CTkLabel(dev_l, text="DEVELOPER",
+                     font=("Segoe UI", 9, "bold"),
+                     text_color="#64748b").pack(anchor="w", pady=(0,10))
+
+        dev_row = ctk.CTkFrame(dev_l, fg_color="transparent")
+        dev_row.pack(fill="x")
+        dev_row.grid_columnconfigure(1, weight=1)
+
+        av = ctk.CTkFrame(dev_row, width=52, height=52, corner_radius=26,
+                           fg_color=ACC_BLUE)
+        av.grid(row=0, column=0, rowspan=2, padx=(0,14))
+        av.grid_propagate(False)
+        ctk.CTkLabel(av, text="N", font=("Segoe UI", 22, "bold"),
+                     text_color="white").place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkLabel(dev_row, text="Nishan",
+                     font=("Segoe UI", 15, "bold")).grid(row=0, column=1, sticky="w")
+        ctk.CTkLabel(dev_row,
+                     text="B.Sc. Civil & Environmental Engineering\nSUST · 2026",
+                     font=("Segoe UI", 11), text_color="#64748b",
+                     justify="left").grid(row=1, column=1, sticky="w")
+
+        # Divider
+        ctk.CTkFrame(dev, width=1, fg_color="#1f2937"
+                     ).grid(row=0, column=0, sticky="nse", padx=0, pady=16)
+
+        # Right: research context
+        dev_r = ctk.CTkFrame(dev, fg_color="transparent")
+        dev_r.grid(row=0, column=1, padx=(12,24), pady=22, sticky="nsew")
+
+        ctk.CTkLabel(dev_r, text="RESEARCH CONTEXT",
+                     font=("Segoe UI", 9, "bold"),
+                     text_color="#64748b").pack(anchor="w", pady=(0,10))
+        ctk.CTkLabel(dev_r,
+                     text="VELOXIS is a research instrument for transportation\n"
+                          "engineering in Bangladesh, focusing on non-motorized\n"
+                          "transport (NMT), rickshaw dominance, and intersection\n"
+                          "capacity analysis on mixed-traffic urban roads.",
+                     font=("Segoe UI", 11), text_color="#94a3b8",
+                     justify="left").pack(anchor="w")
+
+        # ── NextCity Tessera ──────────────────────────────────
+        nct = ctk.CTkFrame(scroll, corner_radius=14, border_width=1)
+        nct.pack(fill="x", padx=32, pady=(16, 0))
+
+        nct_inner = ctk.CTkFrame(nct, fg_color="transparent")
+        nct_inner.pack(fill="x", padx=24, pady=20)
+        nct_inner.grid_columnconfigure(1, weight=1)
+
+        nct_ic = ctk.CTkFrame(nct_inner, width=54, height=54,
+                               corner_radius=14, fg_color=ACC_BLUE)
+        nct_ic.grid(row=0, column=0, rowspan=2, padx=(0,18))
+        nct_ic.grid_propagate(False)
+        ctk.CTkLabel(nct_ic, text="🏙", font=("Segoe UI", 26)
+                     ).place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkLabel(nct_inner, text="NextCity Tessera",
+                     font=("Segoe UI", 14, "bold"),
+                     text_color=ACC_BLUE).grid(row=0, column=1, sticky="w")
+        ctk.CTkLabel(nct_inner,
+                     text="VELOXIS is a product of NextCity Tessera — building\n"
+                          "intelligent tools for urban mobility, traffic engineering,\n"
+                          "and smart city research.",
+                     font=("Segoe UI", 11), text_color="#64748b",
+                     justify="left").grid(row=1, column=1, sticky="w")
+
+        # ── Tech stack ────────────────────────────────────────
+        tech = ctk.CTkFrame(scroll, corner_radius=14, border_width=1)
+        tech.pack(fill="x", padx=32, pady=(16, 0))
+        ctk.CTkLabel(tech, text="TECHNOLOGY STACK",
+                     font=("Segoe UI", 9, "bold"),
+                     text_color="#64748b").pack(anchor="w", padx=24, pady=(16,10))
+
+        tech_grid = ctk.CTkFrame(tech, fg_color="transparent")
+        tech_grid.pack(fill="x", padx=24, pady=(0,16))
+        tech_grid.grid_columnconfigure((0,1,2,3), weight=1)
+
+        tech_items = [
+            ("YOLOv11",       "Object Detection",      ACC_BLUE),
+            ("BoTSORT",       "Multi-Object Tracking", ACC_TEAL),
+            ("OpenCV",        "Computer Vision",       ACC_GREEN),
+            ("CustomTkinter", "Desktop UI",            ACC_PURPLE),
+            ("Matplotlib",    "Analytics Charts",      ACC_AMBER),
+            ("Pandas",        "Data Processing",       "#fb923c"),
+            ("Homography",    "Speed Calibration",     ACC_RED),
+            ("Flask",         "Web Dashboard",         "#60a5fa"),
+        ]
+        for i, (name_t, desc_t, col_t) in enumerate(tech_items):
+            f = ctk.CTkFrame(tech_grid, corner_radius=10, border_width=1)
+            f.grid(row=i//4, column=i%4,
+                   padx=(0 if i%4==0 else 8, 0), pady=(0,8), sticky="ew")
+            ctk.CTkFrame(f, height=3, fg_color=col_t, corner_radius=0).pack(fill="x")
+            ctk.CTkLabel(f, text=name_t,
+                         font=("Segoe UI", 11, "bold")).pack(pady=(10,2))
+            ctk.CTkLabel(f, text=desc_t, font=("Segoe UI", 9),
+                         text_color="#64748b").pack(pady=(0,10))
+
+        # ── License ───────────────────────────────────────────
+        lic = ctk.CTkFrame(scroll, corner_radius=14, border_width=1)
+        lic.pack(fill="x", padx=32, pady=(16, 32))
+
+        lic_row = ctk.CTkFrame(lic, fg_color="transparent")
+        lic_row.pack(fill="x", padx=24, pady=18)
+        lic_row.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(lic_row, text="⚖️", font=("Segoe UI", 28)
+                     ).grid(row=0, column=0, rowspan=2, padx=(0,16), sticky="n")
+        ctk.CTkLabel(lic_row, text="MIT License",
+                     font=("Segoe UI", 13, "bold")).grid(row=0, column=1, sticky="w")
+        ctk.CTkLabel(lic_row,
+                     text="Copyright © 2026 Nishan, NextCity Tessera. "
+                          "Free to use, modify, and distribute under the standard MIT terms. "
+                          "This software is provided as-is, without warranty of any kind.",
+                     font=("Segoe UI", 11), text_color="#64748b",
+                     justify="left", wraplength=680
+                     ).grid(row=1, column=1, sticky="w", pady=(4,0))
+
+
+# ================================================================
 #  MAIN WINDOW
 # ================================================================
 class App(ctk.CTk):
@@ -1872,7 +2130,7 @@ class App(ctk.CTk):
         p=load_prefs()
         name=p.get("author_name","Nishan")
         inst=p.get("institution","SUST")
-        self.title(f"TrafficCounter BD  ·  {name}, {inst}")
+        self.title(f"VELOXIS  ·  {name}, {inst}  ·  NextCity Tessera")
         self.geometry("1340x840"); self.minsize(1100,680)
         self.grid_columnconfigure(1,weight=1); self.grid_rowconfigure(0,weight=1)
 
@@ -1887,18 +2145,19 @@ class App(ctk.CTk):
         li=ctk.CTkFrame(lf,fg_color="transparent"); li.pack(padx=14,pady=12,fill="x")
         ic=ctk.CTkFrame(li,width=42,height=42,corner_radius=10)
         ic.pack(side="left",padx=(0,10)); ic.pack_propagate(False)
-        ctk.CTkLabel(ic,text="🚗",font=("Segoe UI",20)
+        ctk.CTkLabel(ic,text="🚦",font=("Segoe UI",20)
                     ).place(relx=0.5,rely=0.5,anchor="center")
-        ctk.CTkLabel(li,text="TrafficCounter",font=("Segoe UI",14,"bold")
+        ctk.CTkLabel(li,text="VELOXIS",font=("Segoe UI",15,"bold")
                     ).pack(anchor="w")
-        ctk.CTkLabel(li,text="BD Edition · v8.0",font=("Segoe UI",10)
+        ctk.CTkLabel(li,text="by NextCity Tessera · v1.0",font=("Segoe UI",9)
                     ).pack(anchor="w")
 
         ctk.CTkFrame(sb,height=1).grid(row=1,column=0,padx=14,pady=(4,6),sticky="ew")
         SLabel(sb,"Navigation").grid(row=2,column=0,padx=22,pady=(0,4),sticky="w")
 
         nav=[("🏠","Home"),("📹","Live Detection"),("🎬","File Detection"),
-             ("🗺","Lane Drawing"),("📐","Calibrate Speed"),("📊","Analytics"),("⚙️","Settings")]
+             ("🗺","Lane Drawing"),("📐","Calibrate Speed"),("📊","Analytics"),
+             ("⚙️","Settings"),("ℹ️","About")]
         self.nav_btns=[]
         for i,(icon,lbl) in enumerate(nav):
             btn=NavBtn(sb,icon,lbl,lambda idx=i: self._switch(idx))
@@ -1932,7 +2191,7 @@ class App(ctk.CTk):
                      text_color=ACC_BLUE).pack(anchor="w")
         ctk.CTkLabel(af,text=p.get("institution","SUST · CEE Dept."),
                      font=("Segoe UI",10)).pack(anchor="w")
-        ctk.CTkLabel(af,text="© 2026 · MIT License",font=("Segoe UI",9)
+        ctk.CTkLabel(af,text="NextCity Tessera  ·  © 2026",font=("Segoe UI",9)
                     ).pack(anchor="w",pady=(2,0))
 
         # Status bar
@@ -1952,7 +2211,8 @@ class App(ctk.CTk):
         self.cal=CalibratePage(content,status_bar=self.sb2)
         self.dp=DashboardPage(content)
         self.sp=SettingsPage(content)
-        self._pages=[self.hp,self.lp,self.fp,self.la,self.cal,self.dp,self.sp]
+        self.ab=AboutPage(content)
+        self._pages=[self.hp,self.lp,self.fp,self.la,self.cal,self.dp,self.sp,self.ab]
         for pg in self._pages: pg.grid(row=0,column=0,sticky="nsew")
         self._switch(0)
 
@@ -1970,7 +2230,7 @@ class App(ctk.CTk):
         self._pages[idx].tkraise()
         for i,b in enumerate(self.nav_btns): b.set_active(i==idx)
         self.sb2.set(["Home","Live Detection","File Detection",
-                      "Lane Drawing","Calibrate Speed","Analytics","Settings"][idx],"idle")
+                      "Lane Drawing","Calibrate Speed","Analytics","Settings","About"][idx],"idle")
         if idx==5 and not self.dp._ever_shown: self.dp.refresh()
 
     def _toggle_theme(self):
@@ -1983,7 +2243,4 @@ class App(ctk.CTk):
 # ── Entry point ────────────────────────────────────────────────
 if __name__=="__main__":
     for d in ["videos","data","data/snapshots"]: os.makedirs(d,exist_ok=True)
-    App().mainloop()
-
-    os.makedirs("data",  exist_ok=True)
     App().mainloop()
